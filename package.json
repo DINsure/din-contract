@@ -1,0 +1,23 @@
+{
+  "name": "din-contract",
+  "version": "1.0.0",
+  "description": "smart contract of DIN",
+  "main": "index.js",
+  "scripts": {
+    "clean": "hardhat clean",
+    "compile": "hardhat compile",
+    "test": "hardhat test"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^6.1.0",
+    "hardhat": "^2.26.3"
+  },
+  "dependencies": {
+    "@bisonai/orakl-contracts": "^2.0.2",
+    "@kaiachain/contracts": "^1.0.1",
+    "dotenv": "^17.2.1"
+  }
+}

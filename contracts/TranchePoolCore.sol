@@ -125,6 +125,7 @@ contract TranchePoolCore is AccessControl, Pausable, ReentrancyGuard {
 
     event NAVUpdated(uint256 oldNavPerShare, uint256 newNavPerShare, uint256 timestamp);
     event PremiumTransferred(uint256 indexed roundId, address indexed seller, uint256 amount);
+    event CollateralReleased(uint256 indexed roundId, address indexed seller, uint256 amount);
     
     // Freeze/Unfreeze Events
     event RoundFrozen(uint256 indexed roundId, address indexed admin, uint256 timestamp);
@@ -460,6 +461,10 @@ contract TranchePoolCore is AccessControl, Pausable, ReentrancyGuard {
         address[] memory buyers = roundBuyers[roundId];
         address[] memory sellers = roundSellers[roundId];
         
+        // 1. Update NAV to include any yield that was already returned before settlement
+        _updateNAV();
+        
+        // 2. Pay buyers their insurance claims
         for (uint256 i = 0; i < buyers.length; i++) {
             BuyerOrder storage order = buyerOrders[roundId][buyers[i]];
             if (order.filled) {
@@ -470,29 +475,38 @@ contract TranchePoolCore is AccessControl, Pausable, ReentrancyGuard {
             }
         }
         
-        // When triggered, sellers lose their locked collateral but KEEP yield benefits
-        // Premiums were already paid out during matching
+        // 3. Pay sellers their yield portion (they lose collateral but keep yield earnings)
+        uint256 totalSellerYieldPayout = 0;
         for (uint256 i = 0; i < sellers.length; i++) {
             SellerPosition storage position = sellerPositions[roundId][sellers[i]];
             if (position.filled && position.lockedSharesAssigned > 0) {
-                // Calculate collateral portion vs yield portion of shares
-                // We only burn shares proportional to the collateral being used for payout
-                uint256 collateralShares = position.lockedSharesAssigned;
+                // Calculate yield earned on locked shares
+                uint256 totalValue = (position.lockedSharesAssigned * poolAccounting.navPerShare) / 1e18;
+                uint256 originalCollateral = position.filledCollateral;
                 
-                // Sellers lose their locked collateral shares (used to pay buyers)
-                poolAccounting.totalShares -= collateralShares;
-                shareBalances[position.seller] -= collateralShares;
-                lockedShares[position.seller] -= collateralShares;
+                // Yield = total value - original collateral
+                if (totalValue > originalCollateral) {
+                    uint256 yieldEarned = totalValue - originalCollateral;
+                    if (yieldEarned > 0) {
+                        usdtToken.safeTransfer(position.seller, yieldEarned);
+                        totalSellerYieldPayout += yieldEarned;
+                        
+                        emit CollateralReleased(roundId, position.seller, yieldEarned);
+                    }
+                }
                 
-                // Any yield benefits through remaining shares are preserved via NAV
+                // Burn the locked shares (sellers lose collateral portion, got yield portion)
+                poolAccounting.totalShares -= position.lockedSharesAssigned;
+                shareBalances[position.seller] -= position.lockedSharesAssigned;
+                lockedShares[position.seller] -= position.lockedSharesAssigned;
             }
         }
         
-        // Update pool accounting
-        poolAccounting.totalAssets -= totalPayouts;
+        // 4. Update pool accounting
+        poolAccounting.totalAssets -= (totalPayouts + totalSellerYieldPayout);
         poolAccounting.lockedAssets -= roundEconomics[roundId].lockedCollateral;
         
-        // Update NAV after share burning
+        // 5. Update NAV after all changes
         _updateNAV();
     }
     
@@ -502,19 +516,43 @@ contract TranchePoolCore is AccessControl, Pausable, ReentrancyGuard {
      */
     function releaseSellerCollateral(uint256 roundId) external onlySettlementEngine {
         address[] memory sellers = roundSellers[roundId];
+        uint256 totalPayout = 0;
+        uint256 totalSharesBurned = 0;
+        
+        // 1. Update NAV to include any yield that was already returned before settlement
+        _updateNAV();
         
         for (uint256 i = 0; i < sellers.length; i++) {
             SellerPosition storage position = sellerPositions[roundId][sellers[i]];
             if (position.filled) {
-                // Premiums were already paid out during matching
-                // Just unlock shares so sellers can withdraw their collateral + any yield benefits
-                uint256 toUnlock = position.lockedSharesAssigned > 0 ? position.lockedSharesAssigned : position.sharesMinted;
-                lockedShares[position.seller] -= toUnlock;
+                // Calculate shares to burn (locked shares that were committed to this round)
+                uint256 sharesToBurn = position.lockedSharesAssigned > 0 ? position.lockedSharesAssigned : position.sharesMinted;
+                
+                // Calculate total payout based on NAV (collateral + accumulated yield)
+                uint256 sellerPayout = (sharesToBurn * poolAccounting.navPerShare) / 1e18;
+                
+                if (sellerPayout > 0 && sharesToBurn > 0) {
+                    // Transfer total amount (collateral + yield) to seller
+                    usdtToken.safeTransfer(position.seller, sellerPayout);
+                    totalPayout += sellerPayout;
+                    
+                    // Burn the shares (seller got their money, shares should be removed)
+                    shareBalances[position.seller] -= sharesToBurn;
+                    lockedShares[position.seller] -= sharesToBurn;
+                    totalSharesBurned += sharesToBurn;
+                    
+                    emit CollateralReleased(roundId, position.seller, sellerPayout);
+                }
             }
         }
         
-        // Unlock collateral in pool accounting
+        // 2. Update pool accounting: reduce both assets and shares proportionally
+        poolAccounting.totalAssets -= totalPayout;
+        poolAccounting.totalShares -= totalSharesBurned;
         poolAccounting.lockedAssets -= roundEconomics[roundId].lockedCollateral;
+        
+        // 3. Update NAV after proper accounting changes
+        _updateNAV();
     }
 
     // ============ Yield Management Functions ============

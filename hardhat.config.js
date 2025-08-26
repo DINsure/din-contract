@@ -1,6 +1,9 @@
 require("@nomicfoundation/hardhat-toolbox");
 require('dotenv').config();
 
+// Import monitoring tasks
+require("./tasks/monitoring");
+
 const { KAIROS_TESTNET_URL = "", PRIVATE_KEY = "" } = process.env;
 
 module.exports = {

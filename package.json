@@ -6,7 +6,12 @@
   "scripts": {
     "clean": "hardhat clean",
     "compile": "hardhat compile",
-    "test": "hardhat test"
+    "test": "hardhat test",
+    "monitor:insurances": "npx hardhat monitor-insurances --network kairos",
+    "monitor:oracles": "npx hardhat monitor-oracles --network kairos",
+    "monitor:pools": "npx hardhat monitor-pools --network kairos",
+    "monitor:tranches": "npx hardhat monitor-tranches --network kairos",
+    "monitor:yield": "npx hardhat monitor-yield --network kairos"
   },
   "keywords": [],
   "author": "",

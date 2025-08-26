@@ -21,6 +21,13 @@ Modular design with isolated components for scalability and upgradability
 - **FeeTreasury**: Protocol fee collection, distribution, and transparent accounting
 - **Oracle System**: Dual oracle integration (Orakl Network + DINO optimistic oracle)
 
+```bash
+npm run compile
+npm run test
+...
+(Create your own deployment scripts and run using hardhat & ignition)
+```
+
 ## Contract Architecture
 
 **Core Contracts**
@@ -55,7 +62,6 @@ Modular design with isolated components for scalability and upgradability
 - OracleRouter - `0x1EFE5cdf9F7078AfE9480464834A6CEe51E9e3d0`
 - SettlementEngine - `0x0c4EdFEe5f2860eB8d8B29fDdcfa317fFF33B49F`
 - TestFaucet - `0xc2b80EB3F65042Aedc0140DE20cBD45097cE54eb`
-
 
 ## Prerequisites
 

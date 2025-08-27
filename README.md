@@ -130,6 +130,14 @@ npm run test
 - `Trigger Prices`: 18 decimals (stored in ProductCatalog, auto-converted for settlement)
 - `DIN Token`: 18 decimals (standard ERC20)
 
+## DIN Management System
+
+<figure style="text-align:center;">
+  <img src="docs/din-management-system.png" alt="DIN SYSTEM" style="width:auto; max-height:600px;" />
+</figure>
+
+DIN Management System automatically tracks all insuranes and rounds; and decides appropriate actions.
+
 ## Contract Address
 
 - DinRegistry - `0x029A3a8737f87AA4bFCba746eDe65811C135aA52`

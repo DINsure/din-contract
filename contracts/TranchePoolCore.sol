@@ -57,6 +57,7 @@ contract TranchePoolCore is AccessControl, Pausable, ReentrancyGuard {
         bool filled;
         bool refunded;
         uint256 timestamp;
+        uint256 refundAmount; // Amount to refund (for partial fills)
     }
 
     struct SellerPosition {
@@ -69,6 +70,8 @@ contract TranchePoolCore is AccessControl, Pausable, ReentrancyGuard {
         bool filled;
         bool refunded;
         uint256 timestamp;
+        uint256 refundAmount; // Amount to refund (for partial fills)
+        uint256 sharesToBurn; // Shares to burn (for partial fills)
     }
 
     struct PoolAccounting {
@@ -328,7 +331,8 @@ contract TranchePoolCore is AccessControl, Pausable, ReentrancyGuard {
             insuranceTokenId: tokenId,
             filled: false,
             refunded: false,
-            timestamp: block.timestamp
+            timestamp: block.timestamp,
+            refundAmount: 0
         });
         
         roundBuyers[roundId].push(msg.sender);
@@ -387,7 +391,9 @@ contract TranchePoolCore is AccessControl, Pausable, ReentrancyGuard {
             lockedSharesAssigned: 0,
             filled: false,
             refunded: false,
-            timestamp: block.timestamp
+            timestamp: block.timestamp,
+            refundAmount: 0,
+            sharesToBurn: 0
         });
         
         roundSellers[roundId].push(msg.sender);
@@ -428,10 +434,10 @@ contract TranchePoolCore is AccessControl, Pausable, ReentrancyGuard {
         // Lock collateral in pool accounting
         poolAccounting.lockedAssets += matchedAmount;
         
-        // Process matching and distribute premiums/refunds
+        // Process matching, refunds, then premium distribution
         _processMatching(roundId, matchedAmount);
-        _distributePremiums(roundId);
         _processRefunds(roundId);
+        _distributePremiums(roundId);
         
         emit RoundMatched(roundId, matchedAmount, roundBuyers[roundId].length, roundSellers[roundId].length);
         return matchedAmount;
@@ -604,22 +610,52 @@ contract TranchePoolCore is AccessControl, Pausable, ReentrancyGuard {
     // ============ Internal Functions ============
     
     /**
-     * @notice Process round matching logic
+     * @notice Process round matching logic (pure matching, no refunds)
      */
     function _processMatching(uint256 roundId, uint256 matchedAmount) internal {
         address[] memory buyers = roundBuyers[roundId];
         address[] memory sellers = roundSellers[roundId];
+        RoundEconomics storage econ = roundEconomics[roundId];
         
-        // Mark all orders as filled if matched amount covers them (FCFS)
+        // Process buyer matching with partial fill support (FCFS)
         uint256 buyerTotal = 0;
-        for (uint256 i = 0; i < buyers.length; i++) {
+        
+        for (uint256 i = 0; i < buyers.length && buyerTotal < matchedAmount; i++) {
             BuyerOrder storage order = buyerOrders[roundId][buyers[i]];
-            if (buyerTotal + order.purchaseAmount <= matchedAmount) {
+            uint256 remainingCapacity = matchedAmount - buyerTotal;
+
+            if (order.purchaseAmount == 0) {
+                continue;
+            }
+
+            if (order.purchaseAmount <= remainingCapacity) {
+                // Fully fill this buyer
                 order.filled = true;
                 buyerTotal += order.purchaseAmount;
+            } else {
+                // Partial fill - update order to matched portion and store refund amount
+                order.filled = true;
+                
+                uint256 matchedPortion = remainingCapacity;
+                uint256 unmatchedPortion = order.purchaseAmount - matchedPortion;
+                uint256 unmatchedPremium = (order.premiumPaid * unmatchedPortion) / order.purchaseAmount;
+                uint256 matchedPremium = order.premiumPaid - unmatchedPremium;
+                
+                // Store refund amount for _processRefunds
+                order.refundAmount = unmatchedPremium;
+                
+                // Update round economics to reflect reduced buyer demand
+                econ.totalBuyerPurchases -= unmatchedPortion;
+                
+                // Update order to matched portion immediately
+                order.purchaseAmount = matchedPortion;
+                order.premiumPaid = matchedPremium;
+                
+                buyerTotal = matchedAmount;
             }
         }
         
+        // Process seller matching (FCFS)
         uint256 sellerTotal = 0;
         for (uint256 i = 0; i < sellers.length && sellerTotal < matchedAmount; i++) {
             SellerPosition storage position = sellerPositions[roundId][sellers[i]];
@@ -637,29 +673,26 @@ contract TranchePoolCore is AccessControl, Pausable, ReentrancyGuard {
                 lockedShares[sellers[i]] += position.lockedSharesAssigned;
                 sellerTotal += position.collateralAmount;
             } else {
-                // Partial fill
+                // Partial fill - update position to matched portion and store refund amounts
                 position.filled = true;
                 position.filledCollateral = remainingNeeded;
                 uint256 sharesToLock = (position.sharesMinted * remainingNeeded) / position.collateralAmount;
                 position.lockedSharesAssigned = sharesToLock;
                 lockedShares[sellers[i]] += sharesToLock;
 
-                // Refund unfilled portion immediately
+                // Store refund amounts for _processRefunds
                 uint256 refundAmount = position.collateralAmount - remainingNeeded;
                 uint256 sharesToBurn = position.sharesMinted - sharesToLock;
-                if (refundAmount > 0) {
-                    poolAccounting.totalAssets -= refundAmount;
-                    usdtToken.safeTransfer(position.seller, refundAmount);
-                    emit RefundProcessed(roundId, position.seller, refundAmount, false);
-                }
-                if (sharesToBurn > 0) {
-                    poolAccounting.totalShares -= sharesToBurn;
-                    shareBalances[position.seller] -= sharesToBurn;
-                }
+                position.refundAmount = refundAmount;
+                position.sharesToBurn = sharesToBurn;
 
-                // Update the position to the filled portion only
+                // Update round economics to reflect reduced seller supply
+                econ.totalSellerCollateral -= refundAmount;
+                
+                // Update position to filled portion immediately
                 position.collateralAmount = remainingNeeded;
                 position.sharesMinted = sharesToLock;
+
                 sellerTotal = matchedAmount;
             }
         }
@@ -717,38 +750,71 @@ contract TranchePoolCore is AccessControl, Pausable, ReentrancyGuard {
     }
     
     /**
-     * @notice Process refunds for unfilled orders
+     * @notice Process all refunds (order amounts already updated to matched portions in _processMatching)
      */
     function _processRefunds(uint256 roundId) internal {
         address[] memory buyers = roundBuyers[roundId];
         address[] memory sellers = roundSellers[roundId];
+        RoundEconomics storage econ = roundEconomics[roundId];
         
-        // Refund unfilled buyers
+        // Process buyer refunds
         for (uint256 i = 0; i < buyers.length; i++) {
             BuyerOrder storage order = buyerOrders[roundId][buyers[i]];
+            
             if (!order.filled) {
+                // Completely unfilled - refund full premium
                 order.refunded = true;
                 usdtToken.safeTransfer(order.buyer, order.premiumPaid);
                 emit RefundProcessed(roundId, order.buyer, order.premiumPaid, true);
+                
+                // Remove from round economics
+                econ.totalBuyerPurchases -= order.purchaseAmount;
+                econ.premiumPool -= order.premiumPaid;
+                
+            } else if (order.refundAmount > 0) {
+                // Partially filled - refund unmatched premium (order & economics already updated)
+                order.refunded = true;
+                usdtToken.safeTransfer(order.buyer, order.refundAmount);
+                emit RefundProcessed(roundId, order.buyer, order.refundAmount, true);
+                
+                // Only update premium pool (totalBuyerPurchases already updated in matching)
+                econ.premiumPool -= order.refundAmount;
+                order.refundAmount = 0; // Clear refund amount after processing
             }
         }
         
-        // Refund unfilled sellers
+        // Process seller refunds
         for (uint256 i = 0; i < sellers.length; i++) {
             SellerPosition storage position = sellerPositions[roundId][sellers[i]];
+            
             if (!position.filled) {
+                // Completely unfilled - refund full collateral
                 position.refunded = true;
                 
-                // Burn shares and return collateral
-                uint256 collateralAmount = position.collateralAmount;
-                uint256 sharesBurned = position.sharesMinted;
+                poolAccounting.totalAssets -= position.collateralAmount;
+                poolAccounting.totalShares -= position.sharesMinted;
+                shareBalances[position.seller] -= position.sharesMinted;
                 
-                poolAccounting.totalAssets -= collateralAmount;
-                poolAccounting.totalShares -= sharesBurned;
-                shareBalances[position.seller] -= sharesBurned;
+                usdtToken.safeTransfer(position.seller, position.collateralAmount);
+                emit RefundProcessed(roundId, position.seller, position.collateralAmount, false);
                 
-                usdtToken.safeTransfer(position.seller, collateralAmount);
-                emit RefundProcessed(roundId, position.seller, collateralAmount, false);
+                // Remove from round economics
+                econ.totalSellerCollateral -= position.collateralAmount;
+                
+            } else if (position.refundAmount > 0) {
+                // Partially filled - refund unmatched collateral (position & economics already updated)
+                position.refunded = true;
+                
+                poolAccounting.totalAssets -= position.refundAmount;
+                poolAccounting.totalShares -= position.sharesToBurn;
+                shareBalances[position.seller] -= position.sharesToBurn;
+                
+                usdtToken.safeTransfer(position.seller, position.refundAmount);
+                emit RefundProcessed(roundId, position.seller, position.refundAmount, false);
+                
+                // Clear refund amounts after processing (totalSellerCollateral already updated in matching)
+                position.refundAmount = 0;
+                position.sharesToBurn = 0;
             }
         }
     }

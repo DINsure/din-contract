@@ -12,6 +12,85 @@ It includes the complete DIN protocol modular architecture with sophisticated in
 
 Modular design with isolated components for scalability and upgradability
 
+```mermaid
+flowchart TD
+  %% === 1. WEB2 AND WEB3 APPLICATION LAYER ===
+  subgraph APP["Web2 and Web3 Application Layer"]
+    UI[Web interface - catalog and portfolio]
+    BE[Backend - indexer and alerts]
+    CAT[ProductCatalog]
+    POOL[TranchePoolCore]
+    PREM[PremiumEngine]
+    SET[SettlementEngine]
+    ROUTER[OracleRouter]
+  end
+
+  %% === 2. DIN TOKEN ===
+  subgraph TOKEN["DIN Token"]
+    DIN[DIN token - governance and incentives]
+  end
+
+  %% === 3. DIN ORACLE DINO ===
+  subgraph ORACLE["DIN Oracle DINO"]
+    DINO[DINO optimistic oracle - bond and slash]
+    ORAKL[External oracle - Orakl price feeds]
+  end
+
+  %% === 4. DIN GOVERNANCE DINGO ===
+  subgraph GOV["DIN Governance DINGO"]
+    GOVC[Governance module - params and whitelist]
+  end
+
+  %% === 5. OPERATIONS AND ASSET MANAGEMENT ===
+  subgraph OPS["Operations and Asset management"]
+    TEAM[Operations team - curated catalog and rounds]
+    YIELD[YieldRouter - whitelisted pools]
+    TREAS[Treasury - fees and revenue]
+    SAFE[Safety gates - multisig timelock pause]
+  end
+
+  %% === LEDGER TOKEN ===
+  USDT[USDT on Kaia - 6 decimals]
+
+  %% === FLOWS UI AND APP LAYER ===
+  UI --> CAT
+  UI --> POOL
+  UI --> PREM
+  UI --> SET
+  BE --> CAT
+  CAT --> POOL
+  POOL --> PREM
+  PREM --> SET
+  SET --> ROUTER
+
+  %% === ORACLE ROUTING ===
+  ROUTER --> DINO
+  ROUTER --> ORAKL
+  DINO --> ROUTER
+  ORAKL --> ROUTER
+
+  %% === TOKEN LINKS ===
+  DIN --> DINO
+  DIN --> GOVC
+
+  %% === GOVERNANCE LINKS ===
+  GOVC --> CAT
+  GOVC --> ROUTER
+  GOVC --> YIELD
+
+  %% === OPERATIONS LINKS ===
+  TEAM --> CAT
+  TEAM --> POOL
+  POOL --> YIELD
+  YIELD --> TREAS
+  TREAS --> SAFE
+
+  %% === USDT FLOWS ===
+  POOL --- USDT
+  PREM --- USDT
+  SET --- USDT
+```
+
 - **DinRegistry**: Central configuration hub for the entire protocol
 - **TranchePoolCore**: Economics only (orders, collateral, NAV, premiums). Round lifecycle is owned by ProductCatalog.
 - **TranchePoolFactory**: Deploy pools per tranche with proper integration
@@ -20,6 +99,10 @@ Modular design with isolated components for scalability and upgradability
 - **ProductCatalog**: Product and tranche management with round lifecycle
 - **FeeTreasury**: Protocol fee collection, distribution, and transparent accounting
 - **Oracle System**: Dual oracle integration (Orakl Network + DINO optimistic oracle)
+
+
+
+## How to run
 
 ```bash
 npm run compile
